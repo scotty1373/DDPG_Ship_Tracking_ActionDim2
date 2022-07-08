@@ -1,0 +1,128 @@
+# -*- coding: utf-8 -*-
+import os
+import torch
+from torch import nn
+import itertools
+
+_HIDDEN_UNIT_EXTRACTOR = 512
+_HIDDEN_UNIT_VECT = 100
+
+
+class Common(nn.Module):
+    def __init__(self, state_length, frame_overlay):
+        super(Common, self).__init__()
+        self.state_length = state_length
+        self.frame_overlay = frame_overlay
+        self.conv1 = nn.Conv2d(in_channels=self.frame_overlay, out_channels=16,
+                               kernel_size=(8, 8), stride=(4, 4))
+        self.actv1 = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(in_channels=16, out_channels=32,
+                               kernel_size=(4, 4), stride=(2, 2))
+        self.actv2 = nn.ReLU(inplace=True)
+        self.conv3 = nn.Conv2d(in_channels=32, out_channels=64,
+                               kernel_size=(3, 3), stride=(1, 1))
+        self.actv3 = nn.ReLU(inplace=True)
+        self.down_vect = nn.Linear(2304, _HIDDEN_UNIT_EXTRACTOR)
+
+        self.inputDense1 = nn.Linear(self.state_length*self.frame_overlay, _HIDDEN_UNIT_VECT)
+
+    def forward(self, x1, x2):
+        feature = self.conv1(x1)
+        feature = self.actv1(feature)
+        feature = self.conv2(feature)
+        feature = self.actv2(feature)
+        feature = self.conv3(feature)
+        feature = self.actv3(feature)
+        feature = torch.flatten(feature, start_dim=1, end_dim=-1)
+        extractor = self.down_vect(feature)
+
+        out = self.inputDense1(x2)
+
+        output = torch.cat([extractor, out], dim=1)
+        output = torch.nn.functional.relu(output)
+        return output
+
+
+class Actor(nn.Module):
+    def __init__(self, action_dim):
+        super(Actor, self).__init__()
+        self.action_dim = action_dim
+        assert isinstance(self.action_dim, int)
+        self.Dense1 = nn.Linear(_HIDDEN_UNIT_EXTRACTOR+_HIDDEN_UNIT_VECT, 400)
+        self.actv1 = nn.ReLU(inplace=True)
+        self.Dense2 = nn.Linear(400, 300)
+        self.actv2 = nn.ReLU(inplace=True)
+        self.Dense3 = nn.Linear(300, 1)
+        torch.nn.init.uniform_(self.Dense3.weight, a=-0, b=1e-2)
+        torch.nn.init.constant_(self.Dense3.bias, 0.0)
+        self.Dense4 = nn.Linear(300, 1)
+        torch.nn.init.uniform_(self.Dense4.weight, a=-3e-3, b=3e-3)
+        torch.nn.init.constant_(self.Dense4.bias, 0.0)
+        self.actv3 = nn.Tanh()
+        self.actv4 = nn.Tanh()
+
+    def forward(self, common):
+        action = self.Dense1(common)
+        action = self.actv1(action)
+        action = self.Dense2(action)
+        action = self.actv2(action)
+        acc = self.Dense3(action)
+        acc = self.actv3(acc)
+        ori = self.Dense4(action)
+        ori = self.actv4(ori)
+        return torch.cat((acc, ori), dim=-1)
+
+
+class Critic(nn.Module):
+    def __init__(self, action_dim):
+        super(Critic, self).__init__()
+        self.action_dim = action_dim
+        assert isinstance(action_dim, int)
+        self.inputDense1 = nn.Linear(self.action_dim, 100)
+        self.inputactv = nn.ReLU(inplace=True)
+        self.Dense1 = nn.Linear(_HIDDEN_UNIT_EXTRACTOR+_HIDDEN_UNIT_VECT, 400)
+        self.actv3 = nn.ReLU(inplace=True)
+        self.Dense2 = nn.Linear(400 + 100, 300)
+        self.actv4 = nn.ReLU(inplace=True)
+        self.Dense3 = nn.Linear(300, 1)
+        torch.nn.init.uniform_(self.Dense3.weight, a=-3e-4, b=3e-4)
+        torch.nn.init.constant_(self.Dense3.bias, 0.0)
+
+    def forward(self, common, action):
+        input_action = self.inputDense1(action)
+        input_action = self.inputactv(input_action)
+        critic = self.Dense1(common)
+        critic = self.actv3(critic)
+        critic_concat = torch.cat([critic, input_action], dim=1)
+        critic_concat = self.Dense2(critic_concat)
+        critic_concat = self.actv4(critic_concat)
+        critic_concat = self.Dense3(critic_concat)
+        return critic_concat
+
+
+if __name__ == '__main__':
+    common_net = Common(state_length=2, frame_overlay=4)
+    actor_net = Actor(action_dim=2)
+    critic_net = Critic(action_dim=2)
+    loss = torch.nn.MSELoss()
+    opt_common = torch.optim.SGD(common_net.parameters(), 0.001)
+    opt_actor = torch.optim.SGD(actor_net.parameters(), 0.001)
+    opt_actor_fusion = torch.optim.SGD(itertools.chain(common_net.parameters(), actor_net.parameters()), 0.001)
+
+    x = torch.randn((10, 4, 80, 80))
+    y = torch.randn((10, 2*4))
+
+    common = common_net(x, y)
+    out1 = actor_net(common)
+
+    tgt = torch.rand(10, 2)
+    # tgt_critic = torch.randn((10, 1))
+
+    loss_scale = loss(out1, tgt)
+    opt_actor_fusion.zero_grad()
+    loss_scale.backward()
+
+    opt_actor_fusion.step()
+
+
+
