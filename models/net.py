@@ -5,8 +5,13 @@ from torch import nn
 import itertools
 from torch.utils.tensorboard import SummaryWriter
 
-_HIDDEN_UNIT_EXTRACTOR = 1024
+_HIDDEN_UNIT_EXTRACTOR = 512
 _HIDDEN_UNIT_VECT = 100
+
+def _uniform_init_(layer, a=-0.1, b=0.1):
+    torch.nn.init.uniform_(layer.weight, a, b)
+    torch.nn.init.constant_(layer.bias, 0.0)
+    return layer
 
 
 class Actor(nn.Module):
@@ -28,20 +33,26 @@ class Actor(nn.Module):
         self.down_vect = nn.Linear(2304, _HIDDEN_UNIT_EXTRACTOR)
 
         self.inputDense1 = nn.Linear(self.state_length*self.frame_overlay, _HIDDEN_UNIT_VECT)
-        self.down_vect_dense = nn.Linear(_HIDDEN_UNIT_EXTRACTOR + _HIDDEN_UNIT_VECT, 512)
+        self.down_vect_dense = nn.Linear(_HIDDEN_UNIT_EXTRACTOR + _HIDDEN_UNIT_VECT, 300)
 
-        self.Dense1 = nn.Linear(512, 700)
+        self.Dense1 = nn.Linear(300, 300)
         self.actv1 = nn.ELU(inplace=True)
-        self.Dense2 = nn.Linear(700+_HIDDEN_UNIT_VECT, 300)
-        self.actv2 = nn.ELU(inplace=True)
-        self.Dense3 = nn.Linear(300, self.action_dim)
-        torch.nn.init.uniform_(self.Dense3.weight, a=-3e-3, b=3e-3)
-        torch.nn.init.constant_(self.Dense3.bias, 0.0)
-        # self.Dense4 = nn.Linear(300, 1)
-        # torch.nn.init.uniform_(self.Dense4.weight, a=-3e-3, b=3e-3)
-        # torch.nn.init.constant_(self.Dense4.bias, 0.0)
-        self.actv3 = nn.Tanh()
-        # self.actv4 = nn.Tanh()
+
+        # layer_acc = [_uniform_init_(nn.Linear(300+_HIDDEN_UNIT_VECT, 128), 0, 3e-3),
+        #              nn.ELU(inplace=True),
+        #              _uniform_init_(nn.Linear(128, 1), 0, 3e-2),
+        #              nn.Tanh()]
+        layer_acc = [_uniform_init_(nn.Linear(300+_HIDDEN_UNIT_VECT, 1), 0, 5e-2),
+                     nn.Tanh()]
+        self.layer_acc = nn.Sequential(*layer_acc)
+
+        # layer_ori = [_uniform_init_(nn.Linear(300+_HIDDEN_UNIT_VECT, 128), -3e-3, 3e-3),
+        #              nn.ELU(inplace=True),
+        #              _uniform_init_(nn.Linear(128, 1), -3e-3, 3e-3),
+        #              nn.Tanh()]
+        layer_ori = [_uniform_init_(nn.Linear(300+_HIDDEN_UNIT_VECT, 1), -3e-3, 3e-3),
+                     nn.Tanh()]
+        self.layer_ori = nn.Sequential(*layer_ori)
 
     def forward(self, x1, x2):
         # extractor
@@ -62,16 +73,15 @@ class Actor(nn.Module):
         output = torch.nn.functional.elu(output)
 
         # actor
-        action = self.Dense1(output)
-        action = self.actv1(action)
-        action = torch.cat((action, out), dim=1)
-        action = self.Dense2(action)
-        action = self.actv2(action)
-        acc = self.Dense3(action)
-        acc = self.actv3(acc)
-        # ori = self.Dense4(action)
-        # ori = self.actv4(ori)
-        return acc
+        output = self.Dense1(output)
+        output = self.actv1(output)
+
+        out = torch.nn.functional.elu(out)
+        common_output = torch.cat((output, out), dim=-1)
+
+        acc_out = self.layer_acc(common_output)
+        ori_out = self.layer_ori(common_output)
+        return torch.cat([acc_out, ori_out], dim=-1)
 
 
 class Critic(nn.Module):
@@ -91,17 +101,18 @@ class Critic(nn.Module):
                                kernel_size=(3, 3), stride=(1, 1))
         self.conv_actv3 = nn.LeakyReLU(inplace=True)
         self.down_vect = nn.Linear(2304, _HIDDEN_UNIT_EXTRACTOR)
-        self.down_vect_dense = nn.Linear(_HIDDEN_UNIT_EXTRACTOR+_HIDDEN_UNIT_VECT, 512)
+        self.down_vect_dense = nn.Linear(_HIDDEN_UNIT_EXTRACTOR+_HIDDEN_UNIT_VECT, 300)
 
         self.inputDense1 = nn.Linear(self.state_length * self.frame_overlay, _HIDDEN_UNIT_VECT)
 
-        self.inputDense2 = nn.Linear(self.action_dim, 300)
+        action_embedding = 200
+        self.inputDense2 = nn.Linear(self.action_dim, action_embedding)
         self.inputactv = nn.LeakyReLU(inplace=True)
-        self.Dense1 = nn.Linear(512 + 300, 300)
+        self.Dense1 = nn.Linear(300 + action_embedding, 300)
         self.actv3 = nn.LeakyReLU(inplace=True)
-        self.Dense2 = nn.Linear(300 + 300, 300)
+        self.Dense2 = nn.Linear(300 + action_embedding, 128)
         self.actv4 = nn.LeakyReLU(inplace=True)
-        self.Dense3 = nn.Linear(300, 1)
+        self.Dense3 = nn.Linear(128, 1)
 
     def forward(self, x1, x2, action):
         feature = self.conv1(x1)

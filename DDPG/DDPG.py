@@ -14,9 +14,9 @@ import numpy as np
 import torch
 from torch.distributions import Normal
 
-from utils_tools.ou_noise import OrnsteinUhlenbeckActionNoise
+from utils_tools.utils import RunningMeanStd
 from models.net import Actor, Critic
-from utils_tools.utils import process_image, normailze
+from utils_tools.utils import process_image
 from utils_tools.unity import decode
 
 time_Feature = round(time.time())
@@ -37,18 +37,23 @@ class DDPG:
         self.action_dim = action_dim
         self.device = device_
 
-        self.discount_factor = 0.95
-        self.batch_size = 32
+        self.discount_factor = 0.97
+        self.batch_size = 128
         self.train_start = 2000
         self.train_from_checkpoint_start = 3000
-        self.tua = 0.95
+        self.tua = 0.99
         # 初始化history存放参数 ！！！可以不使用，直接使用train_replay返回值做
         self.history_loss_actor = 0.0
         self.history_loss_critic = 0.0
 
         # exploration noise
         self.acc_noise = Normal(torch.zeros(1), torch.ones(1)*0.5)
-        self.ori_noise = Normal(torch.zeros(1), torch.ones(1)*0.3)
+        self.ori_noise = Normal(torch.zeros(1), torch.ones(1)*0.2)
+
+        # state rms
+        self.pixel_rms = RunningMeanStd(shape=(1, self.frame_overlay, 80, 80))
+        self.vect_rms = RunningMeanStd(shape=(1, self.frame_overlay*self.state_length))
+        self.rwd_rms = RunningMeanStd()
 
         # Create replay memory using deque
         self.memory = deque(maxlen=32000)
@@ -127,13 +132,15 @@ class DDPG:
         next_pixel = torch.Tensor(next_pixel).squeeze().to(self.device)
         vect = torch.Tensor(vect).squeeze().to(self.device)
         next_vect = torch.Tensor(next_vect).squeeze().to(self.device)
-        reward_t = torch.Tensor(reward_t).reshape(-1, 1).to(self.device)
         action_t = torch.Tensor(action_t).reshape(-1, 2).to(self.device)
         terminal = torch.BoolTensor(terminal).reshape(-1, 1).to(self.device)
         terminal = terminal.float()
 
-        # reward rms
-        reward_t = normailze(reward_t)
+        reward_t = np.array(reward_t).reshape(-1, 1)
+        mean, std, count = reward_t.mean(), reward_t.std(), reward_t.shape[0]
+        self.rwd_rms.update_from_moments(mean, std**2, count)
+        reward_t = (reward_t - self.rwd_rms.mean) / np.sqrt(self.rwd_rms.var)
+        reward_t = torch.Tensor(reward_t).to(self.device)
 
         # Critic loss
         self.opt_critic.zero_grad()
@@ -183,8 +190,9 @@ class DDPG:
     @staticmethod
     def hard_update_target_model(model, target_model):
         # 解决state_dict浅拷贝问题
-        weight_model = copy.deepcopy(model.state_dict())
-        target_model.load_state_dict(weight_model)
+        with torch.no_grad():
+            weight_model = copy.deepcopy(model.state_dict())
+            target_model.load_state_dict(weight_model)
 
     # target model软更新
     def soft_update_target_model(self, source_model, target_model):

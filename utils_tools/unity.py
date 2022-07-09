@@ -49,6 +49,9 @@ def decode(recv_data, x_gap_old=0, v_ego=0, acc=0, ori=0, ep_lens=0):
     elif ep_lens > 480:
         done = 2
 
+    if abs(float(z_gap)) > 11:
+        done = 1
+
     R = _reward + reward_z
     if isinstance(R, np.ndarray):
         print("R is numpy array")

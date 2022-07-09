@@ -36,7 +36,6 @@ time_Feature = round(time.time())
 
 
 if __name__ == "__main__":
-    seed_torch()
     if not os.path.exists('./' + PATH_LOG):
         os.mkdir(os.path.join(os.getcwd().replace('\\', '/'), PATH_LOG))
     if not os.path.exists('./' + PATH_MODEL):
@@ -51,6 +50,7 @@ if __name__ == "__main__":
     state_size = (img_rows, img_cols, img_channels)
     action_size = (-1, 1)   # env.action_space.n # Steering and Throttle
 
+    seed_torch(seed=25536)
     train_log = log_File_path(PATH_LOG)
     PATH_ = Model_save_Dir(PATH_MODEL, time_Feature)
     agent = DDPG(state_length=state_length,
