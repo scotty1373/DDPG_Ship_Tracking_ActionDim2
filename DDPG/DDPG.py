@@ -37,22 +37,30 @@ class DDPG:
         self.action_dim = action_dim
         self.device = device_
 
-        self.discount_factor = 0.97
-        self.batch_size = 128
+        # hyper params
+        self.discount_factor = 0.97         # agent获得奖励延时， factor越大越关注长远奖励
+        self.batch_size = 128               # 单次训练中样本数量
+        self.lr_critic = 1e-5               # critic学习率， critic学习率通常大于actor
+        self.lr_actor = 1e-5                # actor学习率
+        self.tua = 0.99                     # soft update 更新率
+        self.acc_noise_boundary = 0.5       # acc环境探索噪声阈值
+        self.ori_noise_boundary = 0.2       # ori环境探索噪声阈值
+        self.actor_update_delay = 3         # actor延时更新
+
+        # training info
         self.train_start = 2000
         self.train_from_checkpoint_start = 3000
-        self.tua = 0.99
         # 初始化history存放参数 ！！！可以不使用，直接使用train_replay返回值做
         self.history_loss_actor = 0.0
         self.history_loss_critic = 0.0
 
         # exploration noise
-        self.acc_noise = Normal(torch.zeros(1), torch.ones(1)*0.5)
-        self.ori_noise = Normal(torch.zeros(1), torch.ones(1)*0.2)
+        self.acc_noise = Normal(torch.zeros(1), torch.ones(1)*self.acc_noise_boundary)
+        self.ori_noise = Normal(torch.zeros(1), torch.ones(1)*self.ori_noise_boundary)
 
         # state rms
-        self.pixel_rms = RunningMeanStd(shape=(1, self.frame_overlay, 80, 80))
-        self.vect_rms = RunningMeanStd(shape=(1, self.frame_overlay*self.state_length))
+        # self.pixel_rms = RunningMeanStd(shape=(1, self.frame_overlay, 80, 80))
+        # self.vect_rms = RunningMeanStd(shape=(1, self.frame_overlay*self.state_length))
         self.rwd_rms = RunningMeanStd()
 
         # Create replay memory using deque
@@ -69,8 +77,8 @@ class DDPG:
 
         # Copy the model to target model
         # --> initialize the target model so that the parameters of model & target model to be same
-        self.opt_actor = torch.optim.Adam(self.actor_model.parameters(), lr=1e-5)
-        self.opt_critic = torch.optim.Adam(self.critic_model.parameters(), lr=1e-5)
+        self.opt_actor = torch.optim.Adam(self.actor_model.parameters(), lr=self.lr_actor)
+        self.opt_critic = torch.optim.Adam(self.critic_model.parameters(), lr=self.lr_critic)
         self.loss_critic = torch.nn.MSELoss()
 
         self.hard_update_target_model(self.actor_model, self.actor_target_model)
@@ -158,7 +166,7 @@ class DDPG:
         self.history_loss_critic = critic_loss_cal.item()
 
         # Actor loss
-        if self.t % 3 == 0:
+        if self.t % self.actor_update_delay == 0:
             # 重置critic，actor优化器参数, 否则会影响下次训练
             self.opt_actor.zero_grad()
             policy_actor = self.critic_model(pixel, vect, self.actor_model(pixel, vect))
